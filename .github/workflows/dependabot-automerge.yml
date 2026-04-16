@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.PREMEX_POT_APP_ID }}
           private-key: ${{ secrets.PREMEX_POT_APP_SECRET }}
