@@ -1,9 +1,5 @@
 name: 'Setup Android CLI'
-description: >-
-  Install Google's agent-first `android` CLI, optionally install Android SDK
-  packages, and cache between runs. Replaces the `sdkmanager` +
-  `cmdline-tools` dance with a single composite action. Tracks the current
-  `latest` release of the CLI.
+description: 'Install and cache Google''s agent-first android CLI plus SDK packages. Drop-in setup-android replacement.'
 author: 'Premex'
 
 branding:
