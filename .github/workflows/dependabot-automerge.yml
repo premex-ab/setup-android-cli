@@ -1,0 +1,42 @@
+name: Dependabot auto-merge
+on: pull_request_target
+
+permissions:
+  pull-requests: read
+  contents: read
+
+jobs:
+  dependabot:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]' || github.actor == 'premex-pot[bot]'
+    steps:
+      - name: Generate token
+        id: generate-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PREMEX_POT_APP_ID }}
+          private-key: ${{ secrets.PREMEX_POT_APP_SECRET }}
+
+      - name: Dependabot metadata
+        if: github.actor == 'dependabot[bot]'
+        id: dependabot-metadata
+        uses: dependabot/fetch-metadata@v2
+        continue-on-error: true
+
+      - name: Approve PR
+        if: github.actor != 'premex-pot[bot]'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: gh pr review --approve "$PR_URL"
+
+      - name: Enable auto-merge
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          for i in 1 2 3 4 5; do
+            gh pr merge --auto --squash "$PR_URL" && break
+            echo "Attempt $i failed, waiting 30s..."
+            sleep 30
+          done

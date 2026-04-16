@@ -1,0 +1,231 @@
+name: 'Setup Android CLI'
+description: >-
+  Install Google's agent-first `android` CLI, optionally install Android SDK
+  packages, and cache between runs. Replaces the `sdkmanager` +
+  `cmdline-tools` dance with a single composite action. Tracks the current
+  `latest` release of the CLI.
+author: 'Premex'
+
+branding:
+  icon: 'smartphone'
+  color: 'green'
+
+inputs:
+  packages:
+    description: >-
+      SDK packages to install via `android sdk install`. Space- or
+      newline-separated, slash syntax (e.g. `platforms/android-34
+      build-tools/34.0.0 platform-tools`). Leave empty to install only the
+      CLI with no SDK packages.
+    required: false
+    default: ''
+  sdk-path:
+    description: >-
+      Override where the Android SDK is installed. Defaults to
+      `~/Library/Android/sdk` on macOS and `~/Android/Sdk` on Linux. The
+      chosen path is exported as `ANDROID_HOME` for subsequent steps.
+    required: false
+    default: ''
+  cache:
+    description: >-
+      Cache the CLI's unpacked resources (`~/.android/bin`) and the SDK
+      between runs. Set to `false` to disable. Does not affect Gradle
+      caching - use `gradle/actions/setup-gradle@v4` for that.
+    required: false
+    default: 'true'
+  cache-key:
+    description: >-
+      Extra input appended to the cache key. Change to bust the cache. The
+      default key already includes OS, arch, and the hash of
+      `**/libs.versions.toml` / `**/build.gradle*`.
+    required: false
+    default: ''
+  no-metrics:
+    description: >-
+      Pass `--no-metrics` on `android` invocations made by this action
+      (opts out of Google's usage telemetry). Defaults to `true`.
+    required: false
+    default: 'true'
+  install-url-base:
+    description: >-
+      Override the base URL for downloading the CLI binary. The action
+      appends `/<platform>/android` (for example `/linux_x86_64/android`).
+      Useful for internal mirrors or air-gapped environments. Defaults to
+      Google's redirector.
+    required: false
+    default: 'https://redirector.gvt1.com/edgedl/android/cli/latest'
+
+outputs:
+  sdk-path:
+    description: Absolute path to the Android SDK managed by this action.
+    value: ${{ steps.summary.outputs.sdk-path }}
+  cli-version:
+    description: Version string returned by `android --version`.
+    value: ${{ steps.summary.outputs.cli-version }}
+  cache-hit:
+    description: >-
+      Whether the `~/.android/bin` + SDK cache was hit. Empty when caching
+      is disabled.
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve platform and paths
+      id: platform
+      shell: bash
+      env:
+        INPUT_SDK_PATH: ${{ inputs.sdk-path }}
+      run: |
+        set -euo pipefail
+
+        os=$(uname -s)
+        arch=$(uname -m)
+        case "$os/$arch" in
+          Linux/x86_64)   slug=linux_x86_64 ;;
+          Darwin/arm64)   slug=darwin_arm64 ;;
+          Darwin/x86_64)
+            echo "::warning::Intel Mac runner detected. Google only ships darwin_arm64; using that binary under Rosetta. Prefer an Apple Silicon runner for faster builds."
+            slug=darwin_arm64
+            ;;
+          *)
+            echo "::error::Unsupported platform: $os/$arch. Supported: Linux x86_64, macOS arm64 (darwin_arm64)."
+            exit 1
+            ;;
+        esac
+
+        if [[ -n "${INPUT_SDK_PATH}" ]]; then
+          sdk_path="${INPUT_SDK_PATH}"
+        elif [[ "$os" == "Darwin" ]]; then
+          sdk_path="$HOME/Library/Android/sdk"
+        else
+          sdk_path="$HOME/Android/Sdk"
+        fi
+
+        tool_dir="$RUNNER_TOOL_CACHE/android-cli/latest/$slug"
+
+        mkdir -p "$tool_dir" "$sdk_path"
+
+        {
+          echo "slug=$slug"
+          echo "sdk-path=$sdk_path"
+          echo "tool-dir=$tool_dir"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Cache Android CLI and SDK
+      if: inputs.cache == 'true'
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.android/bin
+          ${{ steps.platform.outputs.sdk-path }}
+        key: setup-android-cli-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.platform.outputs.slug }}-${{ hashFiles('**/libs.versions.toml', '**/build.gradle*', '**/settings.gradle*') }}${{ inputs.cache-key && format('-{0}', inputs.cache-key) || '' }}
+        restore-keys: |
+          setup-android-cli-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.platform.outputs.slug }}-
+
+    - name: Install CLI launcher
+      shell: bash
+      env:
+        SLUG: ${{ steps.platform.outputs.slug }}
+        TOOL_DIR: ${{ steps.platform.outputs.tool-dir }}
+        INSTALL_URL_BASE: ${{ inputs.install-url-base }}
+      run: |
+        set -euo pipefail
+
+        if [[ -x "$TOOL_DIR/android" ]]; then
+          echo "android CLI launcher already present in $TOOL_DIR (from runner tool cache)."
+        else
+          echo "::group::Downloading android CLI ($SLUG)"
+          url="${INSTALL_URL_BASE%/}/${SLUG}/android"
+          echo "Source: $url"
+          curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$TOOL_DIR/android"
+          chmod +x "$TOOL_DIR/android"
+          echo "::endgroup::"
+        fi
+
+        echo "$TOOL_DIR" >> "$GITHUB_PATH"
+        export PATH="$TOOL_DIR:$PATH"
+
+        # First run unpacks the embedded resources into ~/.android/bin. If
+        # that directory was cache-restored, this is effectively a no-op.
+        echo "::group::Bootstrapping CLI (one-time unpack if needed)"
+        ANDROID_CLI_FRESH_INSTALL=1 android --version
+        echo "::endgroup::"
+
+    - name: Configure ANDROID_HOME
+      shell: bash
+      env:
+        SDK_PATH: ${{ steps.platform.outputs.sdk-path }}
+      run: |
+        set -euo pipefail
+        echo "ANDROID_HOME=$SDK_PATH" >> "$GITHUB_ENV"
+        # Also export common adjacent PATH entries so later steps can call
+        # adb / emulator without setting PATH themselves. These are only
+        # populated once their packages are installed.
+        {
+          echo "$SDK_PATH/platform-tools"
+          echo "$SDK_PATH/emulator"
+          echo "$SDK_PATH/cmdline-tools/latest/bin"
+        } >> "$GITHUB_PATH"
+
+    - name: Install SDK packages
+      if: inputs.packages != ''
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        SDK_PATH: ${{ steps.platform.outputs.sdk-path }}
+        NO_METRICS: ${{ inputs.no-metrics }}
+      run: |
+        set -euo pipefail
+
+        metrics_flag=""
+        if [[ "$NO_METRICS" == "true" ]]; then
+          metrics_flag="--no-metrics"
+        fi
+
+        echo "::group::Installing SDK packages"
+        # shellcheck disable=SC2086
+        android $metrics_flag --sdk="$SDK_PATH" sdk install $PACKAGES
+        echo "::endgroup::"
+
+    - name: Register Android/Gradle problem matchers
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::add-matcher::${GITHUB_ACTION_PATH}/matchers.json"
+
+    - name: Summary
+      id: summary
+      shell: bash
+      env:
+        SDK_PATH: ${{ steps.platform.outputs.sdk-path }}
+        SLUG: ${{ steps.platform.outputs.slug }}
+        PACKAGES: ${{ inputs.packages }}
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+
+        cli_version=$(android --version 2>/dev/null || echo "unknown")
+
+        {
+          echo "sdk-path=$SDK_PATH"
+          echo "cli-version=$cli_version"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### 🤖 Setup Android CLI"
+          echo ""
+          echo "| | |"
+          echo "|---|---|"
+          echo "| CLI version | \`$cli_version\` |"
+          echo "| Platform    | \`$SLUG\` |"
+          echo "| SDK path    | \`$SDK_PATH\` |"
+          if [[ -n "$PACKAGES" ]]; then
+            pkgs_md=$(echo "$PACKAGES" | tr '\n' ' ' | sed 's/  */ /g' | sed 's/ $//')
+            echo "| Packages    | \`$pkgs_md\` |"
+          fi
+          if [[ -n "$CACHE_HIT" ]]; then
+            echo "| Cache hit   | \`$CACHE_HIT\` |"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

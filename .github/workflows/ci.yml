@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: validate action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash -s -- latest /usr/local/bin
+          actionlint
+
+  selftest:
+    name: test-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04, macos-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Run action
+        id: cli
+        uses: ./
+        with:
+          packages: platform-tools
+
+      - name: Assert CLI is installed and on PATH
+        run: |
+          set -euo pipefail
+          command -v android
+          android --version
+
+      - name: Assert outputs are populated
+        env:
+          CLI_VERSION: ${{ steps.cli.outputs.cli-version }}
+          SDK_PATH: ${{ steps.cli.outputs.sdk-path }}
+        run: |
+          set -euo pipefail
+          [ -n "$CLI_VERSION" ]
+          [ -d "$SDK_PATH" ]
+
+      - name: Assert platform-tools installed
+        run: |
+          set -euo pipefail
+          [ -x "$ANDROID_HOME/platform-tools/adb" ]
+          adb --version
+
+  selftest-multipackage:
+    name: test-multipackage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21' }
+      - uses: ./
+        with:
+          packages: |
+            platforms/android-34
+            build-tools/34.0.0
+            platform-tools
+      - name: Verify SDK packages
+        run: |
+          set -euo pipefail
+          [ -d "$ANDROID_HOME/platforms/android-34" ]
+          [ -d "$ANDROID_HOME/build-tools/34.0.0" ]
+          [ -x "$ANDROID_HOME/platform-tools/adb" ]
+
+  selftest-nopackages:
+    name: test-cli-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cli
+        uses: ./
+      - name: CLI installed, no SDK packages
+        env:
+          CLI_VERSION: ${{ steps.cli.outputs.cli-version }}
+        run: |
+          set -euo pipefail
+          command -v android
+          [ -n "$CLI_VERSION" ]
+
+  selftest-nocache:
+    name: test-nocache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          cache: 'false'
+          packages: platform-tools
+      - run: adb --version
+
+  selftest-custom-sdk-path:
+    name: test-custom-sdk-path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cli
+        uses: ./
+        with:
+          sdk-path: /tmp/my-android-sdk
+          packages: platform-tools
+      - name: Verify custom path
+        env:
+          SDK_PATH: ${{ steps.cli.outputs.sdk-path }}
+        run: |
+          set -euo pipefail
+          [ "$ANDROID_HOME" = "/tmp/my-android-sdk" ]
+          [ -x "/tmp/my-android-sdk/platform-tools/adb" ]
+          [ "$SDK_PATH" = "/tmp/my-android-sdk" ]
+
+  # Gate job. Name MUST be "CI" to match the org-level required_status_checks
+  # ruleset that protects the default branch.
+  CI:
+    if: always()
+    needs:
+      - validate
+      - selftest
+      - selftest-multipackage
+      - selftest-nopackages
+      - selftest-nocache
+      - selftest-custom-sdk-path
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for r in $RESULTS; do
+            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
+              echo "::error::One or more required jobs failed or were cancelled."
+              exit 1
+            fi
+          done
+          echo "All checks passed."
