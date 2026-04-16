@@ -20,7 +20,7 @@ jobs:
       - name: Dependabot metadata
         if: github.actor == 'dependabot[bot]'
         id: dependabot-metadata
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
         continue-on-error: true
 
       - name: Approve PR
