@@ -19,7 +19,8 @@ inputs:
     description: >-
       Override where the Android SDK is installed. Defaults to
       `~/Library/Android/sdk` on macOS and `~/Android/Sdk` on Linux. The
-      chosen path is exported as `ANDROID_HOME` for subsequent steps.
+      chosen path is exported as `ANDROID_HOME` and `ANDROID_SDK_ROOT` for
+      subsequent steps.
     required: false
     default: ''
   cache:
@@ -149,13 +150,14 @@ runs:
         ANDROID_CLI_FRESH_INSTALL=1 android --version
         echo "::endgroup::"
 
-    - name: Configure ANDROID_HOME
+    - name: Configure ANDROID_HOME and ANDROID_SDK_ROOT
       shell: bash
       env:
         SDK_PATH: ${{ steps.platform.outputs.sdk-path }}
       run: |
         set -euo pipefail
         echo "ANDROID_HOME=$SDK_PATH" >> "$GITHUB_ENV"
+        echo "ANDROID_SDK_ROOT=$SDK_PATH" >> "$GITHUB_ENV"
         # Also export common adjacent PATH entries so later steps can call
         # adb / emulator without setting PATH themselves. These are only
         # populated once their packages are installed.
