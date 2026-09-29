@@ -183,3 +183,10 @@ These surface build issues as inline annotations in the GitHub UI.
 ## License
 
 [MIT](LICENSE)
+
+## Repository CI runners
+
+This repository uses our self-hosted pools exclusively: Tart (macOS ARM64) for
+validation, SDK scenarios, releases and maintenance; Linux x64 for the Linux
+installation smoke test; and Windows x64 for Windows installation tests.
+External fork pull requests do not execute repository code on these pools.
