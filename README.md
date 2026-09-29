@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/premex-ab/setup-android-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/premex-ab/setup-android-cli/actions/workflows/ci.yml)
 
-A GitHub Action that installs Google's agent-first [`android` CLI](https://developer.android.com/tools/agents/android-cli), sets up the Android SDK, and caches between runs. Drop-in replacement for [`setup-android`](https://github.com/android-actions/setup-android) with a simpler, faster setup.
+A GitHub Action that installs Google's agent-first [`android` CLI](https://developer.android.com/tools/agents/android-cli), sets up the Android SDK, and caches between runs. An alternative to [`setup-android`](https://github.com/android-actions/setup-android) with explicit SDK packages and caching.
 
 ## Why switch?
 
@@ -98,7 +98,7 @@ The action exports the following environment variables for subsequent steps:
 
 ## What it does
 
-1. Downloads the `android` CLI launcher (~5 MB) into the runner's tool cache.
+1. Downloads the current `android` CLI launcher (`android.exe` on Windows) into the runner's tool cache on every run, including persistent self-hosted runners.
 2. Unpacks embedded resources on first run into `~/.android/bin/` (~78 MB, cached).
 3. Exports `ANDROID_HOME` and `ANDROID_SDK_ROOT`, and adds `platform-tools/`, `emulator/`, and `cmdline-tools/latest/bin/` to `PATH`.
 4. Runs `android sdk install <packages>` if packages are specified.
@@ -112,14 +112,41 @@ The action exports the following environment variables for subsequent steps:
 | `ubuntu-latest` / `ubuntu-22.04` | Supported |
 | `macos-latest` / `macos-14` (Apple Silicon) | Supported |
 | `macos-13` (Intel, Rosetta) | Best-effort (warning emitted) |
-| `windows-*` | Not yet supported (the CLI itself has limited Windows support) |
+| Windows x64 | Supported with Git Bash on PATH; SDK/build tools only, not `android emulator` |
 | Self-hosted Linux x86_64 / macOS arm64 | Supported |
 
 ## Caching
 
-By default the action caches `~/.android/bin` (CLI resources, ~78 MB) and the full SDK directory between runs. The cache key includes OS, architecture, and the hash of `**/libs.versions.toml`, `**/build.gradle*`, and `**/settings.gradle*` so it busts when your project's SDK requirements change.
+By default the action caches `~/.android/bin` (CLI resources, ~78 MB) and the full SDK directory between runs. The cache key includes OS, architecture, and the hash of `**/libs.versions.toml`, `**/build.gradle*`, and `**/settings.gradle*` plus a hash of the requested packages, resolved SDK path, and download URL. Changing workflow inputs therefore invalidates the SDK cache too. `ANDROID_USER_HOME`, when set, determines where CLI resources are cached.
 
 Gradle caching is **not** handled by this action. Use [`gradle/actions/setup-gradle@v4`](https://github.com/gradle/actions) for that.
+
+## Windows self-hosted runners
+
+The action uses Git Bash, including `curl` and `cygpath`, supplied by Git for Windows.
+Install Git for Windows and ensure the runner service can find `bash` on PATH.
+Java must be available for Gradle builds. SDK setup supports Windows x64;
+Google's `android emulator` command currently does not support Windows.
+
+```yaml
+jobs:
+  build:
+    runs-on: [self-hosted, windows, x64]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: premex-ab/setup-android-cli@v1
+        with:
+          packages: platforms/android-36 build-tools/36.0.0 platform-tools
+      - run: ./gradlew.bat assembleDebug
+```
+
+The default SDK path is `%LOCALAPPDATA%/Android/Sdk`; custom paths containing
+spaces are supported. Paths exported through `ANDROID_HOME`, `ANDROID_SDK_ROOT`,
+and the action outputs work in subsequent PowerShell steps as well as Git Bash.
 
 ## Migrating from `setup-android`
 
@@ -134,7 +161,12 @@ Gradle caching is **not** handled by this action. Use [`gradle/actions/setup-gra
 ```
 
 Key differences:
-- No `cmdline-tools-version` input (always current release).
+- Specify every required platform and build-tools package explicitly. The default
+  installs only the CLI and does not adopt the runner's preinstalled SDK path.
+- No `cmdline-tools-version` input (always current release). A custom
+  `install-url-base` can select a versioned mirror; the launcher is refreshed each run.
+- Direct `sdkmanager`/`avdmanager` calls are not provided by the CLI launcher.
+  Migrate them separately or explicitly install the required command-line tools.
 - No `accept-android-sdk-licenses` input (auto-accepted).
 - Package names use slashes instead of semicolons: `platforms/android-34` not `"platforms;android-34"`.
 - `tools` package doesn't exist in the new CLI; drop it.
