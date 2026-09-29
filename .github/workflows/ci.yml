@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -15,6 +15,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Test action scripts
+        run: |
+          python -m pip install PyYAML==6.0.2
+          python -m unittest discover -s tests -v
       - name: actionlint
         run: |
           curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash -s -- latest /usr/local/bin
@@ -127,6 +134,56 @@ jobs:
           [ -x "/tmp/my-android-sdk/platform-tools/adb" ]
           [ "$SDK_PATH" = "/tmp/my-android-sdk" ]
 
+  selftest-windows:
+    name: test-windows-x64
+    # Only repository branches may execute code on our persistent runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, windows, x64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install SDK at a path containing spaces
+        id: cli
+        uses: ./
+        with:
+          sdk-path: ${{ runner.temp }}/android sdk
+          packages: |
+            platforms/android-34
+            build-tools/34.0.0
+            platform-tools
+      - name: Verify native Windows paths and tools
+        shell: pwsh
+        env:
+          SDK_PATH: ${{ steps.cli.outputs.sdk-path }}
+          CLI_VERSION: ${{ steps.cli.outputs.cli-version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:CLI_VERSION) { throw 'Missing CLI version' }
+          if ($env:ANDROID_HOME -ne $env:SDK_PATH) { throw 'ANDROID_HOME mismatch' }
+          if ($env:ANDROID_SDK_ROOT -ne $env:SDK_PATH) { throw 'ANDROID_SDK_ROOT mismatch' }
+          foreach ($path in @('platforms/android-34/android.jar', 'build-tools/34.0.0/aapt2.exe', 'platform-tools/adb.exe')) {
+            if (-not (Test-Path (Join-Path $env:SDK_PATH $path))) { throw "Missing $path" }
+          }
+          android --no-metrics --version
+          if ($LASTEXITCODE -ne 0) { throw 'android failed' }
+          adb --version
+          if ($LASTEXITCODE -ne 0) { throw 'adb failed' }
+      - name: Verify CLI-only setup without caching
+        uses: ./
+        with:
+          cache: 'false'
+      - name: Verify default SDK path
+        shell: pwsh
+        run: |
+          $expected = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Android/Sdk'))
+          if ([IO.Path]::GetFullPath($env:ANDROID_HOME) -ne $expected) { throw 'Unexpected default SDK path' }
+          android --no-metrics --version
+          if ($LASTEXITCODE -ne 0) { throw 'android failed' }
+
   # Gate job. Name MUST be "CI" to match the org-level required_status_checks
   # ruleset that protects the default branch.
   CI:
@@ -138,6 +195,7 @@ jobs:
       - selftest-nopackages
       - selftest-nocache
       - selftest-custom-sdk-path
+      - selftest-windows
     runs-on: ubuntu-latest
     steps:
       - name: Check results
